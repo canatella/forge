@@ -257,6 +257,19 @@ Callback function CB should accept itself as argument."
                             .id)))
                   data))))
 
+;;; Mutations
+
+(cl-defmethod forge--submit-create-post ((_repo forge-bitbucket-repository) topic)
+  "Create a post in REPO for TOPIC."
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (forge--buck-post topic
+                    (if (forge-issue-p topic)
+                        "/repositories/:project/issues/:number/comments/"
+                      "/repositories/:project/pullrequests/:number/comments/")
+                    nil
+                    :payload `((content . ((raw . ,(string-trim (buffer-string))))))
+                    :callback  (forge--post-submit-callback)
+                    :errorback (forge--post-submit-errorback)))
 
 ;;; Utilities
 
