@@ -287,16 +287,20 @@ OBJ is any forge object that can be used in
                     :callback  (forge--post-submit-callback)
                     :errorback (forge--post-submit-errorback)))
 
-(cl-defmethod forge--set-topic-field
-  ((_repo forge-bitbucket-repository) topic field value)
-  "Set a TOPIC FIELD to VALUE."
-  ;; checkdoc-params: (forge-bitbucket-repository)
+(defun forge--put-topic-json (topic json)
+  "TOPIC JSON."
   (forge--buck-put topic
     (cl-typecase topic
       (forge-pullreq "/repositories/:project/pullrequests/:number") ; TODO: Not sure this works
       (forge-issue   "/repositories/:project/issues/:number"))
-    `((,field . ,value))
-    :callback (forge--set-field-callback)))
+    json
+    :callback (forge--set-field-callback))) ; TODO: The callback does not have to pull everything
+
+(cl-defmethod forge--set-topic-field
+  ((_repo forge-bitbucket-repository) topic field value)
+  "Set a TOPIC FIELD to VALUE."
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (forge--put-topic-json topic `((,field . ,value))))
 
 (cl-defmethod forge--set-topic-title
   ((repo forge-bitbucket-repository) topic title)
@@ -318,6 +322,13 @@ OBJ is any forge object that can be used in
   "Bitbucket does not support labels."
   ;; checkdoc-params: (forge-bitbucket-repository)
   (user-error "Bitbucket does not support labels"))
+
+(cl-defmethod forge--set-topic-assignees
+  ((_repo forge-bitbucket-repository) topic assignees)
+  "Assign a bitbucket REPO TOPIC to the head of ASSIGNEES.
+Bitbucket only supports a single assignee."
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (forge--put-topic-json topic `((assignee . ((username . ,(car assignees)))))))
 
 (cl-defmethod forge--topic-templates ((_repo forge-bitbucket-repository)
                                       (_topic (subclass forge-issue)))
