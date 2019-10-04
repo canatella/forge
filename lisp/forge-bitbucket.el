@@ -59,6 +59,7 @@
                     (setq val (nconc `((assignees) (forks) (labels)) val)))
                   )
                  ((not (assq 'issues    val)) (forge--fetch-issues     repo cb until))
+                 ((not (assq 'pullreqs  val)) (forge--fetch-pullreqs   repo cb until))
                  (t
                   (forge--msg repo t t   "Pulling REPO")
                   (forge--msg repo t nil "Extracting assignees from REPO")
@@ -75,6 +76,7 @@
                       (forge--update-repository repo val)
                       (forge--update-assignees  repo .assignees)
                       (dolist (v .issues) (forge--update-issue repo v))
+                      (dolist (v .pullreqs) (forge--update-pullreq repo v))
                       )
                     (oset repo sparse-p nil))
                   (forge--msg repo t t "Storing REPO")
@@ -256,6 +258,121 @@ Callback function CB should accept itself as argument."
                             .name
                             .id)))
                   data))))
+
+;;;; Pullreqs
+
+(cl-defmethod forge--fetch-pullreqs ((repo forge-bitbucket-repository) callback until)
+  "Fetch pullrequest data for bitbucket REPO.
+CALLBACK will be called.
+Optional argument UNTIL ."
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (let ((query '((state . "MERGED") (state . "SUPERSEDED")
+                 (state . "OPEN") (state . "DECLINED")
+                 (sort . "updated_on")))
+        (cb (let (val cur cnt pos)
+              (lambda (cb &optional v)
+                (cond
+                 ((not pos)
+                  (if (setq cur (setq val v))
+                      (progn
+                        (setq pos 1)
+                        (setq cnt (length val))
+                        (forge--msg nil nil nil "Pulling pullreq %s/%s" pos cnt)
+                        (forge--fetch-pullreq-posts repo cur cb))
+                    (forge--msg repo t t "Pulling REPO pullreqs")
+                    (funcall callback callback (cons 'pullreqs val))))
+                 ;; ((not (assq 'source_project (car cur)))
+                 ;;  (forge--fetch-pullreq-source-repo repo cur cb))
+                 ;; ((not (assq 'target_project (car cur)))
+                 ;;  (forge--fetch-pullreq-target-repo repo cur cb))
+                 (t
+                  (if (setq cur (cdr cur))
+                      (progn
+                        (cl-incf pos)
+                        (forge--msg nil nil nil "Pulling pullreq %s/%s" pos cnt)
+                        (forge--fetch-pullreq-posts repo cur cb))
+                    (forge--msg repo t t "Pulling REPO pullreqs")
+                    (funcall callback callback (cons 'pullreqs val)))))
+                ))))
+    (when until
+      (push (cons 'q (concat "updated_on>" (forge--topics-until repo until 'issue)))
+            query))
+    (forge--msg repo t nil "Pulling REPO pullreqs")
+    (forge--buck-get repo "/repositories/:project/pullrequests" nil
+      :query query
+      :unpaginate t
+      :callback (lambda (value _headers _status _req)
+                  (funcall cb cb value)))))
+
+(cl-defmethod forge--fetch-pullreq-posts
+  ((repo forge-bitbucket-repository) cur cb)
+  "Fetch posts from REPO for the pull request at the head of CUR.
+Update the pull request data and call `(CB CB)'."
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (let-alist (car cur)
+    (forge--buck-get repo
+      (format "/repositories/%s/pullrequests/%s/comments"
+              .destination.repository.full_name  .id) ; TODO: id here is probably not correct?
+      nil
+      :unpaginate t
+      :callback (lambda (value _headers _status _req)
+                  (setf (alist-get 'comments (car cur)) value)
+                  (funcall cb cb)))))
+
+(cl-defmethod forge--update-pullreq ((repo forge-bitbucket-repository) data)
+  "Update database data for a pullrequest in REPO with DATA."
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (emacsql-with-transaction (forge-db)
+    (let-alist data
+      (let* ((pullreq-id (forge--object-id 'forge-pullreq repo .id))
+             (pullreq
+              (forge-pullreq
+               :id           pullreq-id
+               :repository   (oref repo id)
+               :number       .id
+               :state        (pcase-exhaustive .state
+                               ("MERGED" 'merged)
+                               ("DECLINED" 'closed)
+                               ("SUPERSEDED" 'closed)
+                               ("OPEN" 'open))
+               :author       .author.nickname
+               :title        .title
+               :created      (forge--bitbucket-hack-iso8601 .created_on)
+               :updated      (forge--bitbucket-hack-iso8601 .updated_on)
+               ;; `.merged_at' and `.closed_at' does not exists.
+               ;; In such cases use 1, so that these slots at least
+               ;; can serve as booleans.
+               :closed       (and (member .state '("closed" "merged")) 1)
+               :merged       (and (equal .state "merged") 1)
+               :locked-p     nil
+               :editable-p   nil
+               :cross-repo-p (not (equal .source.uuid
+                                         .destination.uuid))
+               :base-ref     .destination.branch.name
+               :base-repo    .destination.repository.full_name
+               :head-ref     .source.branch.name
+               :head-user    nil
+               :head-repo    .source.repository.full_name
+               :milestone    nil
+               :body         (forge--sanitize-string .description))))
+        (closql-insert (forge-db) pullreq t)
+
+        (unless (magit-get-boolean "forge.omitExpensive")
+          (forge--set-id-slot repo pullreq 'assignees (list .assignee))
+          (forge--set-id-slot repo pullreq 'labels .labels))
+        .body .id ; Silence Emacs 25 byte-compiler.
+        (dolist (c .comments)
+          (let-alist c
+            (let ((post
+                   (forge-pullreq-post
+                    :id      (forge--object-id pullreq-id .id)
+                    :pullreq pullreq-id
+                    :number  .id
+                    :author  .user.nickname
+                    :created (forge--bitbucket-hack-iso8601 .created_on)
+                    :updated (forge--bitbucket-hack-iso8601 .updated_on)
+                    :body    (forge--sanitize-string .content.raw))))
+              (closql-insert (forge-db) post t))))))))
 
 ;;; Mutations
 
