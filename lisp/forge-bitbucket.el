@@ -18,15 +18,22 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with Forge.  If not, see http://www.gnu.org/licenses.
 
+;;; Commentary:
+;; Do not commit
+(push nil load-path)
+
 ;;; Code:
 
 (require 'buck)
+
 (require 'forge)
 (require 'seq)
 
+;;; Variables
+
 ;;; Class
 
-(defclass forge-bitbucket-repository (forge-noapi-repository)
+(defclass forge-bitbucket-repository (forge-repository)
   ((issues-url-format         :initform "https://%h/%o/%n/issues")
    (issue-url-format          :initform "https://%h/%o/%n/issues/%i")
    ;; The anchor for the issue itself is .../%i#issue-%i
@@ -41,6 +48,14 @@
    (create-pullreq-url-format :initform "https://%h/%o/%n/pull-requests/new")))
 
 ;;; Pull
+
+;; I want to support this, but there is no topic numbering on
+;; bitbucket, only issue numbering and pr numbering that overlap.
+;; Maybe fetch both?
+(cl-defmethod forge--pull-topic ((repo forge-bitbucket-repository) _n)
+  (error "Fetching an individual topic not implemented for %s"
+         (eieio-object-class repo)))
+
 ;;;; Repository
 
 (cl-defmethod forge--pull ((repo forge-bitbucket-repository) until)
@@ -58,6 +73,9 @@
                   (when (magit-get-boolean "forge.omitExpensive")
                     (setq val (nconc `((assignees) (forks) (labels)) val)))
                   )
+                 ;; ((not (assq 'assignees val)) (forge--fetch-assignees  repo cb))
+                 ;; ((not (assq 'forks     val)) (forge--fetch-forks      repo cb))
+                 ;; ((not (assq 'labels    val)) (forge--fetch-labels     repo cb))
                  ((not (assq 'issues    val)) (forge--fetch-issues     repo cb until))
                  ((not (assq 'pullreqs  val)) (forge--fetch-pullreqs   repo cb until))
                  (t
@@ -73,8 +91,12 @@
                   (forge--msg repo t nil "Storing REPO")
                   (emacsql-with-transaction (forge-db)
                     (let-alist val
+                      (forge--msg repo t nil "Storing REPO main structure")
                       (forge--update-repository repo val)
+                      (forge--msg repo t nil "Storing REPO assignees")
                       (forge--update-assignees  repo .assignees)
+                      ;;(forge--update-labels     repo .labels)
+                      (forge--msg repo t nil "Storing REPO issues")
                       (dolist (v .issues) (forge--update-issue repo v))
                       (dolist (v .pullreqs) (forge--update-pullreq repo v))
                       )
@@ -128,6 +150,10 @@ Return data through CALLBACK."
     (oset repo wiki-p         .has_wiki)
     (oset repo stars          nil)
     (oset repo watchers       nil)))
+
+(cl-defmethod forge--pull-topic ((repo forge-repository) _n)
+  (error "Fetching an individual topic not implemented for %s"
+         (eieio-object-class repo)))
 
 ;;;; Issues
 
@@ -221,6 +247,10 @@ Callback function CB should accept itself as argument."
         (when .assignee
           (forge--set-id-slot repo issue 'assignees
                               (list (forge--bitbucket-make-assignee .assignee))))
+        ;; (unless (magit-get-boolean "forge.omitExpensive")
+        ;;   (forge--set-id-slot repo issue 'assignees .assignees)
+        ;;   (forge--set-id-slot repo issue 'labels .labels))
+        ;.body .id ; Silence Emacs 25 byte-compiler.
         (dolist (c .comments)
           (let-alist c
             (let ((post
@@ -234,7 +264,7 @@ Callback function CB should accept itself as argument."
                     :body    (forge--sanitize-string .content.raw))))
               (closql-insert (forge-db) post t))))))))
 
-;;; Assignees
+;;;;; Assignees
 
 (defun forge--bitbucket-make-assignee (assignee)
   "Create an assigne alist from a bitbucket ASSIGNEE json alist."
@@ -319,6 +349,42 @@ Update the pull request data and call `(CB CB)'."
                   (setf (alist-get 'comments (car cur)) value)
                   (funcall cb cb)))))
 
+(cl-defmethod forge--fetch-pullreq-source-repo
+  ((repo forge-bitbucket-repository) cur cb)
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  ;; If the fork no longer exists, then `.source_project_id' is nil.
+  ;; This will lead to difficulties later on but there is nothing we
+  ;; can do about it.
+  (ignore repo cur cb)
+  (error "`forge--fetch-pullreq-source-repo' not implemented")
+  ;; (let-alist (car cur)
+  ;;   (if .source_project_id
+  ;;       (forge--glab-get repo (format "/projects/%s" .source_project_id) nil
+  ;;         :errorback (lambda (_err _headers _status _req)
+  ;;                      (setf (alist-get 'source_project (car cur)) nil)
+  ;;                      (funcall cb cb))
+  ;;         :callback (lambda (value _headers _status _req)
+  ;;                     (setf (alist-get 'source_project (car cur)) value)
+  ;;                     (funcall cb cb)))
+  ;;     (setf (alist-get 'source_project (car cur)) nil)
+  ;;     (funcall cb cb)))
+  )
+
+(cl-defmethod forge--fetch-pullreq-target-repo
+  ((repo forge-bitbucket-repository) cur cb)
+  ;; checkdoc-params: (forge-bitbucket-repository)
+  (ignore repo cur cb)
+  (error "`forge--fetch-pullreq-target-repo' is not implemented")
+  ;; (let-alist (car cur)
+  ;;   (forge--glab-get repo (format "/projects/%s" .target_project_id) nil
+  ;;     :errorback (lambda (_err _headers _status _req)
+  ;;                  (setf (alist-get 'source_project (car cur)) nil)
+  ;;                  (funcall cb cb))
+  ;;     :callback (lambda (value _headers _status _req)
+  ;;                 (setf (alist-get 'target_project (car cur)) value)
+  ;;                 (funcall cb cb))))
+  )
+
 (cl-defmethod forge--update-pullreq ((repo forge-bitbucket-repository) data)
   "Update database data for a pullrequest in REPO with DATA."
   ;; checkdoc-params: (forge-bitbucket-repository)
@@ -374,7 +440,125 @@ Update the pull request data and call `(CB CB)'."
                     :body    (forge--sanitize-string .content.raw))))
               (closql-insert (forge-db) post t))))))))
 
+;;;; Other
+
+(cl-defmethod forge--fetch-assignees ((repo forge-bitbucket-repository) callback)
+  (error "`forge--fetch-assignees' not implemented")
+  ;; (forge--glab-get repo "/projects/:project/users"
+  ;;   '((per_page . 100))
+  ;;   :unpaginate t
+  ;;   :callback (lambda (value _headers _status _req)
+  ;;               (funcall callback callback (cons 'assignees value))))
+  )
+
+(cl-defmethod forge--update-assignees ((repo forge-bitbucket-repository) data)
+  (error "`forge--update-assignees' not implemented")
+  ;; (oset repo assignees
+  ;;       (with-slots (id) repo
+  ;;         (mapcar (lambda (row)
+  ;;                   (let-alist row
+  ;;                     ;; For other forges we don't need to store `id'
+  ;;                     ;; but here we do because that's what has to be
+  ;;                     ;; used when assigning issues.
+  ;;                     (list (forge--object-id id .id)
+  ;;                           .username
+  ;;                           .name
+  ;;                           .id)))
+  ;;                 data)))
+  )
+
+(cl-defmethod forge--fetch-forks ((repo forge-bitbucket-repository) callback)
+  (error "`forge--fetch-forks' not implemented")
+  ;; (forge--glab-get repo "/projects/:project/forks"
+  ;;   '((per_page . 100)
+  ;;     (simple . "true"))
+  ;;   :unpaginate t
+  ;;   :callback (lambda (value _headers _status _req)
+  ;;               (funcall callback callback (cons 'forks value))))
+  )
+
+(cl-defmethod forge--update-forks ((repo forge-bitbucket-repository) data)
+  (error "`forge--update-forks' not implemented")
+  ;; (oset repo forks
+  ;;       (with-slots (id) repo
+  ;;         (mapcar (lambda (row)
+  ;;                   (let-alist row
+  ;;                     (nconc (forge--repository-ids
+  ;;                             (eieio-object-class repo)
+  ;;                             (oref repo githost)
+  ;;                             .namespace.path
+  ;;                             .path)
+  ;;                            (list .namespace.path
+  ;;                                  .path))))
+  ;;                 data)))
+  )
+
+(cl-defmethod forge--fetch-labels ((repo forge-bitbucket-repository) callback)
+  (error "`forge--fetch-labels' not implemented")
+  ;; (forge--glab-get repo "/projects/:project/labels"
+  ;;   '((per_page . 100))
+  ;;   :unpaginate t
+  ;;   :callback (lambda (value _headers _status _req)
+  ;;               (funcall callback callback (cons 'labels value))))
+  )
+
+(cl-defmethod forge--update-labels ((repo forge-bitbucket-repository) data)
+  (error "`forge--update-labels' not implemented")
+  ;; (oset repo labels
+  ;;       (with-slots (id) repo
+  ;;         (mapcar (lambda (row)
+  ;;                   (let-alist row
+  ;;                     ;; We should use the label's `id' instead of its
+  ;;                     ;; `name' but a topic's `labels' field is a list
+  ;;                     ;; of names instead of a list of ids or an alist.
+  ;;                     ;; As a result of this we cannot recognize when
+  ;;                     ;; a label is renamed and a topic continues to be
+  ;;                     ;; tagged with the old label name until it itself
+  ;;                     ;; is modified somehow.  Additionally it leads to
+  ;;                     ;; name conflicts between group and project
+  ;;                     ;; labels.  See #160.
+  ;;                     (list (forge--object-id id .name)
+  ;;                           .name
+  ;;                           (downcase .color)
+  ;;                           .description)))
+  ;;                 ;; For now simply remove one of the duplicates.
+  ;;                 (cl-delete-duplicates data
+  ;;                                       :key (apply-partially #'alist-get 'name)
+  ;;                                       :test #'equal))))
+  )
+
+
+;;;; Notifications
+
+;; The closest to notifications that Gitlab provides are "events" as
+;; described at https://docs.gitlab.com/ee/api/events.html.  This
+;; allows us to see the last events that took place, but that is not
+;; good enough because we are mostly interested in events we haven't
+;; looked at yet.  Gitlab doesn't make a distinction between unread
+;; and read events, so this is rather useless and we don't use it for
+;; the time being.
+
 ;;; Mutations
+
+(cl-defmethod forge--submit-create-pullreq ((_ forge-bitbucket-repository) base-repo)
+  (error "`forge--submit-create-pullreq' not implemented")
+  ;; (let-alist (forge--topic-parse-buffer)
+  ;;   (pcase-let* ((`(,base-remote . ,base-branch)
+  ;;                 (magit-split-branch-name forge--buffer-base-branch))
+  ;;                (`(,head-remote . ,head-branch)
+  ;;                 (magit-split-branch-name forge--buffer-head-branch))
+  ;;                (head-repo (forge-get-repository 'stub head-remote)))
+  ;;     (forge--glab-post head-repo "/projects/:project/merge_requests"
+  ;;       `(,@(and (not (equal head-remote base-remote))
+  ;;                `((target_project_id . ,(oref base-repo forge-id))))
+  ;;         (target_branch . ,base-branch)
+  ;;         (source_branch . ,head-branch)
+  ;;         (title         . , .title)
+  ;;         (description   . , .body)
+  ;;         (allow_collaboration . t))
+  ;;       :callback  (forge--post-submit-callback)
+  ;;       :errorback (forge--post-submit-errorback))))
+  )
 
 (cl-defmethod forge--submit-create-issue ((_repo forge-bitbucket-repository) obj)
   "Create an issue in REPO.
@@ -388,9 +572,9 @@ OBJ is any forge object that can be used in
                  (priority . "major") ;TODO set other priorities in buffer
                  (kind     . "bug") ;TODO set other kinds in buffer
                  (content  . ((raw    . , .body)
-                              (markup . "markdown"))) ; TODO enable other markups
+                              (markup . "markdown")))) ; TODO enable other markups
       :callback  (forge--post-submit-callback)
-      :errorback (forge--post-submit-errorback)))))
+      :errorback (forge--post-submit-errorback))))
 
 (cl-defmethod forge--submit-create-post ((_repo forge-bitbucket-repository) topic)
   "Create a post in REPO for TOPIC."
@@ -446,10 +630,13 @@ OBJ is any forge object that can be used in
   ((repo forge-bitbucket-repository) topic)
   "Change the state of bitbucket REPO TOPIC."
   ;; checkdoc-params: (forge-bitbucket-repository)
-  (forge--set-topic-field repo topic 'state
-                          (cl-ecase (oref topic state) ; TODO: Handle bitbucket states better
-                            (closed "open")
-                            (open   "closed"))))
+  (cl-etypecase topic
+    (forge-pullreq (user-error "Bitbucket pullrequests must be merged or declined"))
+    (forge-issue
+     (forge--set-topic-field repo topic 'state
+                             (cl-ecase (oref topic state) ; TODO: Handle bitbucket states better
+                               (closed "open")
+                               (open   "closed"))))))
 
 (cl-defmethod forge--set-topic-labels
   ((_repo forge-bitbucket-repository) _topic _labels)
@@ -510,6 +697,9 @@ Return the same list of files, if present in REPO's default branch."
     (if (string-match "T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\\.[0-9]\\{3\\}\\([0-9]+\\)" time)
         (replace-match "" nil t time 1)
       time)))
+
+(cl-defmethod forge--topic-type-prefix ((_repo forge-bitbucket-repository) type)
+  (if (eq type 'pullreq) "!" "#"))
 
 (cl-defun forge--buck-get (obj resource
                                &optional params
