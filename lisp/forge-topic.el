@@ -664,7 +664,8 @@ Return a value between 0 and 1."
 (defun forge-read-topic (prompt)
   (let* ((default (forge-current-topic))
          (repo    (forge-get-repository (or default t)))
-         (gitlabp (forge--childp repo 'forge-gitlab-repository))
+         (gitlabp (or (forge--childp repo 'forge-gitlab-repository)
+                      (forge--childp repo 'forge-bitbucket-repository)))
          (choices (sort
                    (nconc
                     (let ((prefix (if gitlabp "!" "")))
