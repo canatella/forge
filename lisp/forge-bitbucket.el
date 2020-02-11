@@ -20,7 +20,7 @@
 
 ;;; Commentary:
 ;; Do not commit
-(push nil load-path)
+;;(push nil load-path)
 
 ;;; Code:
 
