@@ -96,6 +96,7 @@
                       (forge--msg repo t nil "Storing REPO assignees")
                       (forge--update-assignees  repo .assignees)
                       ;;(forge--update-labels     repo .labels)
+					  ;;(forge--update-milestones repo .milestones) ; TODO: bitbucket has milestones
                       (forge--msg repo t nil "Storing REPO issues")
                       (dolist (v .issues) (forge--update-issue repo v))
                       (dolist (v .pullreqs) (forge--update-pullreq repo v))
